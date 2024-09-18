@@ -5,7 +5,7 @@ Class response:
 
   def alarmSystem():#picture, buzzer, leds
 
-  def voiceRego():
+  def voiceReco():
 
     
 
