@@ -1,7 +1,7 @@
 #import necessary libraries and packages
 import cv2
-from securityCode.verification import Verification
-import securityCode.sendMessage as sendMessage
+from verification import Verification
+import sendMessage
 #install statements in README.md
 import numpy as np
 import pandas as pd
