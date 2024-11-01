@@ -1,11 +1,11 @@
 #Import necessary libraries and packages
 import time
-from securityCode.sensorDetection import sensorDetection
-from securityCode.verification import Verification
+from sensorDetection import sensorDetection
+from verification import Verification
 from tkinter import messagebox
 import tkinter as tk
 from PIL import Image, ImageTk  # For handling images
-import securityCode.weatherInformation as weatherInformation
+import weatherInformation
 import threading
 #Variable indicating status of system
 def main():
