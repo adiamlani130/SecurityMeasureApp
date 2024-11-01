@@ -1,6 +1,6 @@
 #Import necessary libraries and packages
 import boto3
-import weatherInformation as weatherInformation 
+import weatherInformation
 #Send notification to provided phone number in sandbox with summary of security status
 def send_sms(phone_number, message):
    """
