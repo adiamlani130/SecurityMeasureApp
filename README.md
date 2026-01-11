@@ -1,29 +1,126 @@
-# SecurityMeasureApp
-# The Security Measure App is an application linked to a RASBERRY PI 400 Unit. It utilizes an MQ-2 gas sensor as well as a flame sensor to detect possible fires and smoke. 
-# The Pi is also paired with a rain sensor and DHT11 temperature sensor in case of harsh weather conditions in the place of deployment.
-# A HC-SR501 infared human sensor.
-# A KY-008 Laser sensor indicates that on/off status of the app.
-# The sensors are paired with LEDs,that indicate the status of the sensors.
-# Dependencies:
-# The app needs the following python libraries, run the commands below to install them.
-# pip install openmeteo-requests
-# pip install RPi.GPIO
-# pip install numpy
-# pip install pandas
-# pip install requests-cache
-# pip install retry-requests
-# pip install Adafruit_DHT
-# pip install cv2
-# pip install boto3
-# Ensure that the pi unit has a functional webcam connection.
-# This app uses a few aws services. A valid aws account would be needed to use the required services.
-# Must have read/write access to an s3 bucket, local file system to store images etc,
-# and a sandbox verified phone number for sns
-# AWS credentials would need to be configured into the app.
+SecurityMeasureApp
 
+SecurityMeasureApp is an IoT-based security and monitoring application designed for deployment on a Raspberry Pi 400. The system integrates environmental sensors, motion detection, computer vision, and AWS cloud services to detect potential threats such as fire, smoke, intrusion, and extreme weather conditions, and to notify users in real time.
 
-# Ensure GPIO pin connection between Raspberry Pi, breadboard, sensors, LEDS aligns with pins used in code, ensure circuit is reliable
-# To begin application, user must verify identity through AWS face rekognition and AWS transcribe
-# When armed, sensors will register values every 5 seconds and send to threat algorithm
-# The linear regression algorithm built in the app will assess expected cost, estimate threat level and send corresponding summary via SNS to user
-# openmeteo free API used to display location data on the homepage and in the SNS message sent to the user.
+Features
+Fire and Smoke Detection
+
+MQ-2 Gas Sensor
+
+Flame Sensor
+
+Environmental Monitoring
+
+DHT11 Temperature and Humidity Sensor
+
+Rain Sensor
+
+Weather data integration via the Open-Meteo API
+
+Intrusion Detection
+
+HC-SR501 Infrared Motion Sensor
+
+System Status Indicators
+
+KY-008 Laser Sensor indicating armed/disarmed status
+
+LED indicators displaying individual sensor states
+
+Identity Verification
+
+Facial recognition using AWS Rekognition
+
+Voice authentication using AWS Transcribe
+
+Threat Assessment and Alerts
+
+Sensor data collected every 5 seconds
+
+Built-in linear regression model estimates threat severity and expected cost
+
+Automated threat summaries sent to the user via AWS SNS
+
+Hardware Requirements
+
+Raspberry Pi 400
+
+MQ-2 Gas Sensor
+
+Flame Sensor
+
+DHT11 Temperature and Humidity Sensor
+
+Rain Sensor
+
+HC-SR501 PIR Motion Sensor
+
+KY-008 Laser Sensor
+
+LEDs and resistors
+
+Breadboard and jumper wires
+
+USB or Pi-compatible webcam
+
+Software Dependencies
+
+Install the required Python libraries using pip:
+
+pip install openmeteo-requests
+pip install RPi.GPIO
+pip install numpy
+pip install pandas
+pip install requests-cache
+pip install retry-requests
+pip install Adafruit_DHT
+pip install opencv-python
+pip install boto3
+
+AWS Requirements
+
+Valid AWS account
+
+Configured AWS credentials on the Raspberry Pi
+
+Read/write access to an S3 bucket for storing images and data
+
+Verified SNS phone number for message delivery
+
+Enabled services:
+
+AWS Rekognition
+
+AWS Transcribe
+
+AWS SNS
+
+Amazon S3
+
+Application Workflow
+
+User identity is verified using AWS Rekognition and AWS Transcribe.
+
+Once armed, the system polls all sensors every 5 seconds.
+
+Sensor readings are passed to the threat assessment algorithm.
+
+The linear regression model evaluates threat severity and estimated cost.
+
+A summary alert is sent to the user via AWS SNS.
+
+Weather data from the Open-Meteo API is included in the dashboard and alert messages.
+
+Setup Notes
+
+Ensure all GPIO pin connections match the pin configuration defined in the code.
+
+Confirm reliable circuit connections between the Raspberry Pi, sensors, and LEDs.
+
+A functional webcam must be connected to the Raspberry Pi prior to running the application.
+
+Network connectivity is required for AWS and weather API access.
+
+Disclaimer
+
+This project is intended for educational and demonstration purposes. It is not designed for use as a certified safety or security system.
