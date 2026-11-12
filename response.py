@@ -1,99 +1,144 @@
 #import necessary libraries and packages
-import cv2
-from verification import Verification
-import sendMessage
-#install statements in README.md
-import numpy as np
+import os
+import time
 import pandas as pd
 from sklearn.linear_model import LinearRegression
+import config
+import sendMessage
+
+_verifier = None
+_costModel = None
+_lastAlertTime = None
+
+FEATURES = ['Rain', 'Infrared', 'Temperature', 'Humidity', 'Flame', 'Gas']
+
+
+#AWS clients are created on first use so importing this module needs no AWS setup
+def _getVerifier():
+    global _verifier
+    if _verifier is None:
+        from verification import Verification
+        _verifier = Verification()
+    return _verifier
+
+
 #Calculate urgency of situation
 def calcThreatLevel(sensorValues):
-   #Simple algorithm to add urgency to assess situation
-   urgency=0
-   if sensorValues[2]>90 or sensorValues[2]<40:
-       urgency+=1
-   if sensorValues[3]>70:
-       urgency+=1
-   if sensorValues[5]:
-       urgency += 3  # Gas detection significantly increases urgency
-   if sensorValues[4]:
-       urgency += 3  # Fire detection is highly critical
-   if sensorValues[1]:
-       urgency += 3  # Intruder detection is highly critical
-   if sensorValues[0]:
-       urgency += 1  # Sprinklers on indicate a fire emergency
-  
-   return urgency
+    #Simple algorithm to add urgency to assess situation
+    urgency = 0
+    temperature = sensorValues["temperature"]
+    humidity = sensorValues["humidity"]
+    # A failed DHT11 read gives None; don't treat that as an emergency
+    if temperature is not None and (temperature > config.TEMP_HIGH_C or temperature < config.TEMP_LOW_C):
+        urgency += 1
+    if humidity is not None and humidity > config.HUMIDITY_HIGH:
+        urgency += 1
+    if sensorValues["gas"]:
+        urgency += 3  # Gas detection significantly increases urgency
+    if sensorValues["flame"]:
+        urgency += 3  # Fire detection is highly critical
+    if sensorValues["intruder"]:
+        urgency += 3  # Intruder detection is highly critical
+    if sensorValues["rain"]:
+        urgency += 1  # Water detected (rain / leak / sprinklers)
+    return urgency
+
+
+#Linear Regression model to assess expected financial loss (trained once, on first use)
+def _getCostModel():
+    global _costModel
+    if _costModel is None:
+        #Data for predicted financial loss (temperatures in °F)
+        data = {
+            'Rain': [1, 0, 1, 0, 1, 0, 1, 1, 0, 1],
+            'Infrared': [0, 1, 0, 1, 0, 1, 1, 0, 1, 0],
+            'Temperature': [85, 100, 70, 95, 90, 75, 60, 50, 40, 30],
+            'Humidity': [50, 20, 60, 10, 45, 30, 25, 70, 55, 20],
+            'Flame': [0, 1, 0, 1, 0, 1, 0, 1, 0, 0],
+            'Gas': [0, 1, 0, 1, 1, 0, 0, 1, 0, 1],
+            'Financial Loss': [500, 30000, 200, 15000, 1000, 2500, 50, 40000, 1000, 0]}
+        df = pd.DataFrame(data)
+        model = LinearRegression()
+        model.fit(df[FEATURES], df['Financial Loss'])
+        _costModel = model
+    return _costModel
+
+
+def expectedCost(sensorValues):
+    model = _getCostModel()
+    temperatureC = sensorValues["temperature"]
+    # The model was trained in °F; fall back to a typical room temperature if the DHT11 read failed
+    temperatureF = temperatureC * 9 / 5 + 32 if temperatureC is not None else 70
+    humidity = sensorValues["humidity"] if sensorValues["humidity"] is not None else 40
+    row = pd.DataFrame([[
+        int(bool(sensorValues["rain"])),
+        int(bool(sensorValues["intruder"])),
+        temperatureF,
+        humidity,
+        int(bool(sensorValues["flame"])),
+        int(bool(sensorValues["gas"])),
+    ]], columns=FEATURES)
+    predictedLoss = max(0.0, float(model.predict(row)[0]))  # a negative loss makes no sense
+    return f"Predicted financial loss: ${predictedLoss:,.2f}\n"
 
 
 #Create message summarizing sensor values and threat level
-def createMessage(values,url,num):
-   #Insert all sensor values into message
-   message = "\nSensor Summary:\n"
-   message += "Sprinkler alarm: {}\n".format("Activated" if values[0] else "Not activated")
-   message += "Intruder alarm: {}\n".format("Detected" if values[1] else "No detection")
-   message += "Temperature: {}°C\n".format(values[2])
-   message += "Humidity: {}%\n".format(values[3])
-   message += "Fire alarm: {}\n".format("Detected" if values[4] else "No detection")
-   message += "Gas sensor: {}\n".format("Detected" if values[5] else "No detection")
-   message += "Video Link to 5 second security feed: {}\n ".format(url)
-   # Add urgency level to the message
-   magnitude=num
-   if magnitude > 5:
-       message += "\nUrgency Level: HIGH\nImmediate action required!\n"
-   elif magnitude>2:
-       message += "\nUrgency Level: MEDIUM\nMonitor the situation.\n"
-   else:
-       message += "\nUrgency Level: LOW\nSituation minimal\n"
-   #Add expected cost to message
-   message+=sendMessage.expectedCost()
-   sendMessage.send_sms(123,message)
-   print(message)
+def createMessage(values, url, level):
+    #Insert all sensor values into message
+    message = "\nSensor Summary:\n"
+    message += "Rain/water alarm: {}\n".format("Activated" if values["rain"] else "Not activated")
+    message += "Intruder alarm: {}\n".format("Detected" if values["intruder"] else "No detection")
+    message += "Temperature: {}\n".format(f"{values['temperature']}°C" if values["temperature"] is not None else "unavailable")
+    message += "Humidity: {}\n".format(f"{values['humidity']}%" if values["humidity"] is not None else "unavailable")
+    message += "Fire alarm: {}\n".format("Detected" if values["flame"] else "No detection")
+    message += "Gas sensor: {}\n".format("Detected" if values["gas"] else "No detection")
+    if url:
+        message += "Video of security feed: {}\n".format(url)
+    # Add urgency level to the message
+    if level > 5:
+        message += "\nUrgency Level: HIGH\nImmediate action required!\n"
+    elif level > 2:
+        message += "\nUrgency Level: MEDIUM\nMonitor the situation.\n"
+    else:
+        message += "\nUrgency Level: LOW\nSituation minimal\n"
+    #Add expected cost to message
+    message += expectedCost(values)
+    return message
 
 
-#Take a 5 second video of room, save the video for user to see
+#Take a short video of room and upload it, returns a temporary link (or None if it failed)
 def alarmSystem():
-   #Must have set up S3 Bucket and video webcam for mp4
-   Verification.captureVideo('securityFeed.mp4',5)
-   bucket='securityFeedS3Bucket'
-   videoURL = Verification.uploadToS3('securityFeed.mp4','securityFeedS3Bucket')
-   return videoURL
+    if not config.S3_BUCKET:
+        print("S3_BUCKET is not set; skipping security video")
+        return None
+    verifier = _getVerifier()
+    fileName = time.strftime("securityFeed-%Y%m%d-%H%M%S.mp4")
+    try:
+        verifier.captureVideo(fileName, config.ALARM_VIDEO_SECONDS)
+        objectName = verifier.uploadToS3(fileName, config.S3_BUCKET, f"alarms/{fileName}")
+        return verifier.presignedUrl(config.S3_BUCKET, objectName)
+    except Exception as e:
+        print(f"Could not record/upload security video: {e}")
+        return None
+    finally:
+        if os.path.exists(fileName):
+            os.remove(fileName)
 
 
-#Respond  to possible dangers/threats
+#Respond to possible dangers/threats
 def respond(sensorValues):
-   level=calcThreatLevel(sensorValues)
-   #Only send alert if sensor goes off
-   if level>=1:
-       url=alarmSystem()
-       sendMessage.sendMessage(sensorValues,url,level)
-
-
-#Linear Regression model to assess expected financial loss
-def expectedCost(sensorValues):
-   #Data for predicted financial loss
-   data = {
-   'Sprinklers': [1, 0, 1, 0, 1, 0, 1, 1, 0, 1],
-   'Infrared': [0, 1, 0, 1, 0, 1, 1, 0, 1, 0],
-   'Temperature': [85, 100, 70, 95, 90, 75, 60, 50, 40, 30],
-   'Humidity': [50, 20, 60, 10, 45, 30, 25, 70, 55, 20],
-   'Flame': [0, 1, 0, 1, 0, 1, 0, 1, 0, 0],
-   'Gas': [0, 1, 0, 1, 1, 0, 0, 1, 0, 1],
-   'Financial Loss': [500, 30000, 200, 15000, 1000, 2500, 50, 40000, 1000, 0]}
-   # Convert to DataFrame
-   df = pd.DataFrame(data)
-   # Define features and target variable
-   X = df[['Sprinklers', 'Infrared', 'Temperature', 'Humidity', 'Flame', 'Gas']]
-   y = df['Financial Loss']
-   # Train the model
-   model = LinearRegression()
-   model.fit(X, y)
-   # Model coefficients
-   print("Model Coefficients:")
-   for feature, coef in zip(X.columns, model.coef_):
-       print(f"{feature}: {coef}")
-   # Example input for prediction (modify these values as needed)
-   predicted_loss = model.predict(sensorValues)
-   cost=(f"Predicted Financial Loss for sensors {sensorValues}: ${predicted_loss[0]:,.2f}")
-   print(cost)
-   return cost
+    global _lastAlertTime
+    level = calcThreatLevel(sensorValues)
+    #Only send alert if a sensor goes off, and not more often than the cooldown allows
+    if level < 1:
+        return False
+    now = time.monotonic()
+    if _lastAlertTime is not None and now - _lastAlertTime < config.ALERT_COOLDOWN_SECONDS:
+        print(f"Threat level {level}, alert already sent recently - waiting for cooldown")
+        return False
+    _lastAlertTime = now
+    url = alarmSystem()
+    message = createMessage(sensorValues, url, level)
+    print(message)
+    sendMessage.send_sms(config.ALERT_PHONE_NUMBER, message)
+    return True

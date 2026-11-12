@@ -1,96 +1,81 @@
 #install necessary libraries and packages
-import openmeteo_requests
 import requests_cache
-import pandas as pd
 from retry_requests import retry
-#getWeatherSummary calls Open-Meteo API to recieve location information
-def getWeatherSummary(call):   
-   # Setup the Open-Meteo API client with cache and retry on error
-   cache_session = requests_cache.CachedSession('.cache', expire_after = 3600)
-   retry_session = retry(cache_session, retries = 5, backoff_factor = 0.2)
-   openmeteo = openmeteo_requests.Client(session = retry_session)
-   #Message to be displayed on homescreen, and to be sent to user's mobile device
-   #snsMessage is condensed version fo fullMessage
-   snsMessage=""
-   fullMessage=""
-   # Make sure all required weather variables are listed here
-   # The order of variables in hourly or daily is important to assign them correctly below
-   url = "https://api.open-meteo.com/v1/forecast"
-   params = {
-       "latitude": 52.52,
-       "longitude": 13.41,
-       "current": ["temperature_2m", "precipitation", "weather_code", "wind_speed_10m"],
-       "hourly": ["temperature_2m", "precipitation_probability", "rain", "showers", "snowfall", "uv_index"],
-       "daily": ["uv_index_max", "precipitation_sum", "wind_speed_10m_max"],
-       "temperature_unit": "fahrenheit",
-       "wind_speed_unit": "mph",
-       "precipitation_unit": "inch",
-       "timezone": "America/New_York"
-   }
-   responses = openmeteo.weather_api(url, params=params)
-   # Process first location. Add a for-loop for multiple locations or weather models
-   response = responses[0]
-   #Add to sns message
-   snsMessage+=(f"Coordinates {response.Latitude()}°N {response.Longitude()}°E")
-   snsMessage+=(f"Timezone {response.Timezone()} {response.TimezoneAbbreviation()}")
-   fullMessage+=snsMessage
-   fullMessage+=(f"Elevation {response.Elevation()} m asl")
-   # Current values. The order of variables needs to be the same as requested.
-   current = response.Current()
-   current_temperature_2m = current.Variables(0).Value()
-   current_precipitation = current.Variables(1).Value()
-   current_weather_code = current.Variables(2).Value()
-   current_wind_speed_10m = current.Variables(3).Value()
-   #add to sns messgae
-   snsMessage+=(f"Current temperature_2m {current_temperature_2m}")
-   snsMessage+=(f"Current precipitation {current_precipitation}")
-   snsMessage+=(f"Current weather_code {current_weather_code}")
-   snsMessage+=(f"Current wind_speed_10m {current_wind_speed_10m}")
-   fullMessage+=snsMessage
-   # Process hourly data. The order of variables needs to be the same as requested.
-   hourly = response.Hourly()
-   hourly_temperature_2m = hourly.Variables(0).ValuesAsNumpy()
-   hourly_precipitation_probability = hourly.Variables(1).ValuesAsNumpy()
-   hourly_rain = hourly.Variables(2).ValuesAsNumpy()
-   hourly_showers = hourly.Variables(3).ValuesAsNumpy()
-   hourly_snowfall = hourly.Variables(4).ValuesAsNumpy()
-   hourly_uv_index = hourly.Variables(5).ValuesAsNumpy()
-   #Take data every hour
-   hourly_data = {"date": pd.date_range(
-       start = pd.to_datetime(hourly.Time(), unit = "s", utc = True),
-       end = pd.to_datetime(hourly.TimeEnd(), unit = "s", utc = True),
-       freq = pd.Timedelta(seconds = hourly.Interval()),
-       inclusive = "left"
-   )}
-   hourly_data["temperature_2m"] = hourly_temperature_2m
-   hourly_data["precipitation_probability"] = hourly_precipitation_probability
-   hourly_data["rain"] = hourly_rain
-   hourly_data["showers"] = hourly_showers
-   hourly_data["snowfall"] = hourly_snowfall
-   hourly_data["uv_index"] = hourly_uv_index
-   #Add hourly data to full message
-   fullMessage+=pd.DataFrame(data = hourly_data)
-   print(fullMessage)
-   # Process daily data. The order of variables needs to be the same as requested.
-   daily = response.Daily()
-   daily_uv_index_max = daily.Variables(0).ValuesAsNumpy()
-   daily_precipitation_sum = daily.Variables(1).ValuesAsNumpy()
-   daily_wind_speed_10m_max = daily.Variables(2).ValuesAsNumpy()
-   # Take data every day
-   daily_data = {"date": pd.date_range(
-       start = pd.to_datetime(daily.Time(), unit = "s", utc = True),
-       end = pd.to_datetime(daily.TimeEnd(), unit = "s", utc = True),
-       freq = pd.Timedelta(seconds = daily.Interval()),
-       inclusive = "left"
-   )}
-   daily_data["uv_index_max"] = daily_uv_index_max
-   daily_data["precipitation_sum"] = daily_precipitation_sum
-   daily_data["wind_speed_10m_max"] = daily_wind_speed_10m_max
-   # Add daily data to full message
-   fullMessage += pd.DataFrame(data = daily_data)
-   print(fullMessage)
-   #Return message for GUI frontpage summary or to be sent to user through sns
-   if(call):
-       return snsMessage
-   else:
-       return fullMessage
+import config
+
+URL = "https://api.open-meteo.com/v1/forecast"
+
+# WMO weather interpretation codes used by Open-Meteo
+WEATHER_CODES = {
+    0: "Clear sky", 1: "Mainly clear", 2: "Partly cloudy", 3: "Overcast",
+    45: "Fog", 48: "Depositing rime fog",
+    51: "Light drizzle", 53: "Drizzle", 55: "Dense drizzle",
+    56: "Light freezing drizzle", 57: "Freezing drizzle",
+    61: "Light rain", 63: "Rain", 65: "Heavy rain",
+    66: "Light freezing rain", 67: "Freezing rain",
+    71: "Light snow", 73: "Snow", 75: "Heavy snow", 77: "Snow grains",
+    80: "Light rain showers", 81: "Rain showers", 82: "Violent rain showers",
+    85: "Light snow showers", 86: "Snow showers",
+    95: "Thunderstorm", 96: "Thunderstorm with hail", 99: "Thunderstorm with heavy hail",
+}
+
+_session = None
+
+
+#Format a number that Open-Meteo may return as null
+def _fmt(value, digits=0):
+    return "?" if value is None else f"{value:.{digits}f}"
+
+
+#Open-Meteo session with a 1 hour cache and retry on error
+def _getSession():
+    global _session
+    if _session is None:
+        cacheSession = requests_cache.CachedSession('.weather_cache', expire_after=3600)
+        _session = retry(cacheSession, retries=5, backoff_factor=0.2)
+    return _session
+
+
+#Fetch the raw forecast JSON from Open-Meteo
+def fetchWeather():
+    params = {
+        "latitude": config.LATITUDE,
+        "longitude": config.LONGITUDE,
+        "current": "temperature_2m,precipitation,weather_code,wind_speed_10m",
+        "daily": "temperature_2m_max,temperature_2m_min,precipitation_probability_max,"
+                 "precipitation_sum,uv_index_max,wind_speed_10m_max",
+        "forecast_days": 1,
+        "temperature_unit": "fahrenheit",
+        "wind_speed_unit": "mph",
+        "precipitation_unit": "inch",
+        "timezone": config.TIMEZONE,
+    }
+    response = _getSession().get(URL, params=params, timeout=10)
+    response.raise_for_status()
+    return response.json()
+
+
+#Turn the forecast JSON into text. call=True gives the short SMS version, False the GUI version
+def formatWeather(data, call):
+    current = data["current"]
+    daily = data["daily"]
+    condition = WEATHER_CODES.get(current["weather_code"], f"Code {current['weather_code']}")
+    snsMessage = (f"Weather: {condition}, {_fmt(current['temperature_2m'], 0)}°F, "
+                  f"wind {_fmt(current['wind_speed_10m'], 0)} mph, "
+                  f"precip {_fmt(current['precipitation'], 2)} in")
+    if call:
+        return snsMessage
+    fullMessage = (
+        f"{condition}\n"
+        f"Now: {_fmt(current['temperature_2m'], 0)}°F, wind {_fmt(current['wind_speed_10m'], 0)} mph\n"
+        f"Today: high {_fmt(daily['temperature_2m_max'][0], 0)}°F / low {_fmt(daily['temperature_2m_min'][0], 0)}°F\n"
+        f"Rain chance {_fmt(daily['precipitation_probability_max'][0], 0)}%, "
+        f"total {_fmt(daily['precipitation_sum'][0], 2)} in\n"
+        f"Max UV {_fmt(daily['uv_index_max'][0], 1)}, max wind {_fmt(daily['wind_speed_10m_max'][0], 0)} mph"
+    )
+    return fullMessage
+
+
+#getWeatherSummary calls Open-Meteo API to receive local weather information
+def getWeatherSummary(call):
+    return formatWeather(fetchWeather(), call)

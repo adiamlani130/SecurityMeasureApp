@@ -1,153 +1,246 @@
 #Import necessary libraries and packages
-import time
-from sensorDetection import sensorDetection
-from verification import Verification
-from tkinter import messagebox
-import tkinter as tk
-from PIL import Image, ImageTk  # For handling images
-import weatherInformation
+import os
+import queue
 import threading
-#Variable indicating status of system
+import time
+import tkinter as tk
+from tkinter import messagebox
+from PIL import Image, ImageTk  # For handling images
+import config
+import weatherInformation
+
+BG = "lightblue"
+
+
+class SecurityApp:
+    def __init__(self, root):
+        self.root = root
+        self.verifier = None
+        self.sensors = None
+        self.sensorThread = None
+        self.stopEvent = threading.Event()
+        self.voiceVerified = False
+        self.cameraVerified = False
+        self.busy = False
+        # Results from background threads; Tkinter widgets may only be touched from the main thread
+        self.results = queue.Queue()
+
+        #create GUI using tkinter
+        root.title("Security System")
+        root.geometry("420x620")
+        root.configure(bg=BG)
+        root.protocol("WM_DELETE_WINDOW", self.onClose)
+        tk.Label(root, text="Welcome to the Verification System", font=("Helvetica", 16), bg=BG).pack(pady=20)
+
+        #Set up voice recognition button with voice.jpg
+        self.voiceButton = self.makeButton("voice.jpg", "Voice", self.onVoiceButton)
+        self.voiceLabel = tk.Label(root, text="Click to record voice password", font=("Helvetica", 10), bg=BG)
+        self.voiceLabel.pack(pady=5)
+        #Set up facial recognition button with camera.jpg
+        self.cameraButton = self.makeButton("camera.jpg", "Camera", self.onCameraButton)
+        self.cameraLabel = tk.Label(root, text="Click to take picture", font=("Helvetica", 10), bg=BG)
+        self.cameraLabel.pack(pady=5)
+        #Set up arm system button (hidden until both checks pass)
+        self.armButton = tk.Button(root, text="Arm System", bg="black", fg="green",
+                                   font=("Helvetica", 14), command=self.toggleArmed)
+        self.statusLabel = tk.Label(root, text="System: Disarmed", font=("Helvetica", 12), bg=BG)
+        self.statusLabel.pack(pady=5)
+        #Label for clock
+        self.clockLabel = tk.Label(root, font=('Helvetica', 14))
+        self.clockLabel.pack(pady=10)
+        #Label for weather information
+        self.weatherLabel = tk.Label(root, text="Loading weather...", font=('Helvetica', 11),
+                                     bg=BG, justify="left")
+        self.weatherLabel.pack(pady=5)
+
+        self.updateClock()
+        self.updateWeather()
+        self.pollResults()
+
+    #Image button if the picture exists, plain text button otherwise
+    def makeButton(self, imagePath, fallbackText, command):
+        if os.path.exists(imagePath):
+            image = Image.open(imagePath).resize((100, 100), Image.LANCZOS)
+            photo = ImageTk.PhotoImage(image)
+            button = tk.Button(self.root, image=photo, command=command, relief="flat")
+            button.image = photo  # keep a reference so Tk doesn't garbage-collect it
+        else:
+            button = tk.Button(self.root, text=fallbackText, width=12, height=3, command=command)
+        button.pack(pady=10)
+        return button
+
+    # ---------------------------------------------------------- background work
+    #Run slow work (camera, AWS) off the GUI thread, then call onDone(result, error) on the GUI thread
+    def runInBackground(self, work, onDone):
+        def worker():
+            try:
+                self.results.put((onDone, work(), None))
+            except Exception as e:
+                self.results.put((onDone, None, e))
+        threading.Thread(target=worker, daemon=True).start()
+
+    def pollResults(self):
+        while True:
+            try:
+                onDone, result, error = self.results.get_nowait()
+            except queue.Empty:
+                break
+            onDone(result, error)
+        self.root.after(100, self.pollResults)
+
+    def getVerifier(self):
+        if self.verifier is None:
+            from verification import Verification
+            self.verifier = Verification()
+        return self.verifier
+
+    # ------------------------------------------------------------ verification
+    #Record the spoken password and check it with AWS Transcribe
+    def onVoiceButton(self):
+        if self.busy:
+            return
+        if not config.S3_BUCKET:
+            messagebox.showerror("Setup needed", "Set S3_BUCKET (see README) before using voice verification.")
+            return
+        self.busy = True
+        self.voiceLabel.config(text=f"Recording for {config.VOICE_RECORD_SECONDS}s... say your password", fg="black")
+        self.runInBackground(lambda: self.getVerifier().verifyVoice(config.S3_BUCKET), self.onVoiceDone)
+
+    def onVoiceDone(self, passed, error):
+        self.busy = False
+        if error:
+            print(f"Voice verification error: {error}")
+            self.voiceLabel.config(text=f"Voice Password: error ({error})", fg="red", wraplength=380)
+        elif passed:
+            self.voiceVerified = True
+            self.voiceLabel.config(text="Voice Password: Completed", fg="green")
+            self.voiceButton.config(bg="green")
+            self.checkVerificationStatus()
+        else:
+            self.voiceLabel.config(text="Voice Password: Did not pass", fg="red")
+
+    #Take a picture and compare it with the owner's face using AWS Rekognition
+    def onCameraButton(self):
+        if self.busy:
+            return
+        self.busy = True
+        self.cameraLabel.config(text="Taking picture...", fg="black")
+        self.runInBackground(lambda: self.getVerifier().verifyFace(), self.onCameraDone)
+
+    def onCameraDone(self, passed, error):
+        self.busy = False
+        if error:
+            print(f"Face verification error: {error}")
+            self.cameraLabel.config(text=f"Picture Verification: error ({error})", fg="red", wraplength=380)
+        elif passed:
+            self.cameraVerified = True
+            self.cameraLabel.config(text="Picture Verification: Completed", fg="green")
+            self.cameraButton.config(bg="green")
+            self.checkVerificationStatus()
+        else:
+            self.cameraLabel.config(text="Picture Verification: Did not pass", fg="red")
+
+    #Show the 'arm'/'disarm' button once both verification steps are complete
+    def checkVerificationStatus(self):
+        if self.voiceVerified and self.cameraVerified:
+            self.armButton.pack(pady=10, before=self.statusLabel)
+
+    #Each arm or disarm uses up the verification, so the next one needs both checks again
+    def resetVerification(self):
+        self.voiceVerified = False
+        self.cameraVerified = False
+        self.armButton.pack_forget()
+        defaultBg = self.root.cget("bg")
+        self.voiceButton.config(bg=defaultBg)
+        self.cameraButton.config(bg=defaultBg)
+        self.voiceLabel.config(text="Click to record voice password", fg="black")
+        self.cameraLabel.config(text="Click to take picture", fg="black")
+
+    def isArmed(self):
+        return self.sensorThread is not None and self.sensorThread.is_alive() and not self.stopEvent.is_set()
+
+    # ------------------------------------------------------------------ arming
+    def toggleArmed(self):
+        # Never arm or disarm without a fresh voice + face verification
+        if not (self.voiceVerified and self.cameraVerified):
+            return
+        if self.isArmed():
+            self.disarm()
+        elif self.sensorThread is not None and self.sensorThread.is_alive():
+            return  # still shutting down from the last disarm
+        else:
+            self.arm()
+
+    #Arm security system: set up sensors and start polling in a background thread
+    def arm(self):
+        try:
+            from sensorDetection import sensorDetection
+            self.sensors = sensorDetection()
+        except Exception as e:
+            messagebox.showerror("Could not arm", f"Sensor setup failed:\n{e}")
+            return
+        self.stopEvent.clear()
+        self.sensorThread = threading.Thread(target=self.runSensorDetection, daemon=True)
+        self.sensorThread.start()
+        self.armButton.config(text="Disarm System", fg="red")
+        self.statusLabel.config(text="System: ARMED (verify again to disarm)", fg="red")
+        self.resetVerification()
+        print("System Armed: True")
+
+    #Stop polling; the sensor thread turns off the laser and cleans up GPIO when it exits
+    def disarm(self):
+        self.stopEvent.set()
+        self.armButton.config(text="Arm System", fg="green")
+        self.statusLabel.config(text="System: Disarmed", fg="black")
+        self.resetVerification()
+        print("System Armed: False")
+
+    #Run sensor system until disarmed
+    def runSensorDetection(self):
+        sensors = self.sensors
+        try:
+            while not self.stopEvent.is_set():
+                try:
+                    sensors.printSensors()
+                except Exception as e:
+                    # One bad read or a network hiccup shouldn't stop monitoring
+                    print(f"Error during sensor poll: {e}")
+                self.stopEvent.wait(config.POLL_INTERVAL_SECONDS)
+        finally:
+            sensors.terminate()
+
+    # ---------------------------------------------------------------- widgets
+    def updateClock(self):
+        self.clockLabel.config(text=time.strftime("%H:%M:%S"))
+        self.root.after(1000, self.updateClock)
+
+    #Change weather information for GUI, refreshed every 30 minutes
+    def updateWeather(self):
+        def onDone(text, error):
+            if error:
+                print(f"Weather error: {error}")
+                self.weatherLabel.config(text="Error loading weather information")
+            else:
+                self.weatherLabel.config(text=text)
+        self.runInBackground(lambda: weatherInformation.getWeatherSummary(False), onDone)
+        self.root.after(30 * 60 * 1000, self.updateWeather)
+
+    def onClose(self):
+        # Closing the window would stop monitoring, so it needs a verified disarm first
+        if self.isArmed():
+            messagebox.showwarning("System armed", "Verify and disarm the system before closing.")
+            return
+        if self.sensorThread is not None and self.sensorThread.is_alive():
+            self.sensorThread.join(timeout=10)
+        self.root.destroy()
+
+
 def main():
- run1=None
- #Try-catch for main function
- try:
-   armed=False
-   #create GUI using tkinter
-   root = tk.Tk()
-   root.title("Security System")
-   root.geometry("400x500")  # Set window size
-   root.configure(bg="lightblue")
-   # Add a welcome label
-   welcome_label = tk.Label(root, text="Welcome to the Verification System", font=("Helvetica", 16), bg="lightblue")
-   welcome_label.pack(pady=20)
-   # Initialize verification state
-   voiceVerified = False
-   cameraVerified = False
-   root.title("Weather Information")
-   root.geometry()
+    root = tk.Tk()
+    SecurityApp(root)
+    #Keep running application
+    root.mainloop()
 
 
-   # Create a button for attempting spoken password verification
-   def voiceButton():
-     nonlocal voiceVerified  # Use nonlocal to modify the variable from the outer scope
-     #Capture video of user's dialogue and upload to existing S3 bucket
-     Verification.captureVideo('password.mp4',5)
-     Verification.uploadToS3('password.mp4','s3BucketName')  # Call the external method, add S3 Bucket here
-     passwordSpoken=Verification.transcribeAudio('s3_uri','transcriptionJobName') #MUST BE SET
-     #Check if words spoken match password
-     if passwordSpoken:
-       voiceVerified = True
-       #Reconfigure so audio password is verified
-       voice_label.config(text="Voice Password: Completed", fg="green")
-       voice_button.config(bg="green")
-       checkVerificationStatus()  # Check if both verifications are completed
-     else:
-         #Incorrect password case
-         voice_label.config(text="Voice Password: Did not pass", fg="red")
-  
-   #Create a button for conduction facial recognition
-   def cameraButton():
-       nonlocal cameraVerified  # Use nonlocal to modify the variable from the outer scope
-       #Take image of user
-       verifyIdentity= Verification()
-       verifyIdentity.captureImage('sourceImage.jpg')
-       result=verifyIdentity.compareFaces('sourceImage.jpg','referenceImage.jpg')
-       #Check if user's face matches owner's face
-       if result:
-         cameraVerified = True
-         camera_label.config(text="Picture Verification: Completed", fg="green")
-         camera_button.config(bg="green")
-         checkVerificationStatus()  # Check if both verifications are completed
-       else:
-         #Negative recognition case
-         camera_label.config(text="Picture Verification: Did not pass", fg="red")
-  
-   #Check if both verification steps are complete
-   def checkVerificationStatus():
-     #Create 'arm' button if conditions satisfied
-     if voiceVerified and cameraVerified:
-       arm_button.pack(pady=20)
-  
-   #Camera GUI element on screen
-   def updateClock(label):
-     current_time = time.strftime("%H:%M:%S")  # Get the current time in HH:MM:SS format
-     label.config(text=current_time)  # Update the label with the current time
-     label.after(1000, updateClock, label)
-   #Arm security system
-   def armSystem():
-     nonlocal armed  # Access the armed variable from outer scope
-     # Switch status and print
-     toggle()
-     print("System Armed: ", armed)
-     global run1
-     if armed:
-       run1 = sensorDetection()
-       # Start sensor detection in a new thread to avoid blocking the main GUI thread
-       sensor_thread = threading.Thread(target=runSensorDetection, args=(run1,))
-       sensor_thread.start()
-     else:
-       # Safely stop the sensor system
-       if 'run1' in locals():
-         run1.terminate()
-
-
-   #Run sensor system
-   def runSensorDetection(run1):
-     global armed  # Use global because this runs in a different thread
-     while armed:
-       run1.printSensors()
-       time.sleep(5)
-  
-   #Switch system status
-   def toggle():
-     nonlocal armed
-     armed= not armed
-  
-   #Set up voice recognition button with voice.jpg
-   voice_image = Image.open("voice.jpg")  # Load the image
-   voice_image = voice_image.resize((100, 100), Image.ANTIALIAS)  # Resize the image
-   voice_photo = ImageTk.PhotoImage(voice_image)  # Convert image for Tkinter
-   voice_button = tk.Button(root, image=voice_photo, command=voiceButton, relief="flat")
-   voice_button.pack(pady=10)
-   voice_label = tk.Label(root, text="Click to record voice password", font=("Helvetica", 10), bg="lightblue")
-   voice_label.pack(pady=5)
-   #Set up facial recognition button with camera.jpg
-   camera_image = Image.open("camera.jpg")  # Load the image
-   camera_image = camera_image.resize((100, 100), Image.ANTIALIAS)  # Resize the image
-   camera_photo = ImageTk.PhotoImage(camera_image)  # Convert image for Tkinter
-   camera_button = tk.Button(root, image=camera_photo, command=cameraButton, relief="flat")
-   camera_button.pack(pady=10)
-   camera_label = tk.Label(root, text="Click to take picture", font=("Helvetica", 10), bg="lightblue")
-   camera_label.pack(pady=5)
-   #Set up arm system button
-   arm_button = tk.Button(root, text="Arm System", bg="black", fg="green", font=("Helvetica", 14), command=armSystem)
-   arm_button.pack_forget()  # Hide it initially
-   #Label for clock
-   clock_label = tk.Label(root, font=('Helvetica', 14))
-   clock_label.pack(pady=20)  # Add some vertical padding
-   #Update clock
-   updateClock(clock_label)
-
-
-   #Change weather information for GUI
-   def updateWeather():
-     # Get data from API, display on screen if retrievable
-     try:
-       weather_info = weatherInformation.getWeatherSummary(False)
-       weather_label.config(text=weather_info)
-     except Exception as e:
-       weather_label.config(text="Error loading weather information")
-       print(f"Error: {e}")
-   #Label for weather information
-   weather_label = tk.Label(root, text="Loading weather...", font=('Helvetica', 12), bg="lightblue")
-   weather_label.pack(pady=5)
-   #Change weather summary
-   updateWeather()
-   #Keep running application
-   root.mainloop()
- #Catch error in main
- except Exception as e:
-   print(f"An error occurred in the main function: {str(e)}")
 if __name__ == "__main__":
-   main()
+    main()

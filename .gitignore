@@ -1,0 +1,12 @@
+__pycache__/
+*.pyc
+.venv/
+
+# Weather API cache
+.weather_cache.sqlite
+
+# Captured media (can contain faces / your pass-phrase)
+*.mp4
+*.wav
+sourceImage.jpg
+referenceImage.jpg

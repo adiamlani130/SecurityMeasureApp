@@ -1,126 +1,189 @@
-SecurityMeasureApp
+# SecurityMeasureApp
 
-SecurityMeasureApp is an IoT-based security and monitoring application designed for deployment on a Raspberry Pi 400. The system integrates environmental sensors, motion detection, computer vision, and AWS cloud services to detect potential threats such as fire, smoke, intrusion, and extreme weather conditions, and to notify users in real time.
+SecurityMeasureApp is an IoT security and monitoring application for the **Raspberry Pi 400**. It combines environmental sensors, motion detection, a webcam and AWS cloud services to detect fire, gas/smoke, intruders, water and extreme temperatures, and texts the owner a summary with a link to a short security video.
 
-Features
-Fire and Smoke Detection
+> This project is for educational and demonstration purposes. It is **not** a certified safety or security system.
 
-MQ-2 Gas Sensor
+## Features
 
-Flame Sensor
+- **Fire and smoke detection**: MQ-2 gas sensor and flame sensor
+- **Environmental monitoring**: DHT11 temperature and humidity sensor, rain/water sensor, local weather from the free [Open-Meteo](https://open-meteo.com/) API
+- **Intrusion detection**: HC-SR501 PIR motion sensor
+- **Status indicators**: KY-008 laser is on while the system is armed; optional LED per sensor
+- **Two-factor identity verification** before arming:
+  - face match against the owner's photo with **AWS Rekognition**
+  - spoken pass-phrase recorded from the microphone and checked with **AWS Transcribe**
+- **Threat assessment and alerts**:
+  - sensors are polled every 5 seconds
+  - a simple scoring rule rates urgency LOW / MEDIUM / HIGH
+  - a small linear-regression model estimates the expected financial loss
+  - on an alert the webcam records a 5 second clip to a **private S3 bucket**, and an SMS with the summary, a temporary video link and the weather is sent through **AWS SNS**
+  - alerts are rate-limited (default: at most one every 2 minutes)
 
-Environmental Monitoring
+## How it works
 
-DHT11 Temperature and Humidity Sensor
+```
+main.py (Tkinter GUI)
+ ├─ Voice button ──► verification.py: arecord ─► S3 ─► Transcribe ─► pass-phrase check
+ ├─ Face button ───► verification.py: webcam photo ─► Rekognition CompareFaces
+ ├─ Arm button (appears after both pass)
+ │    └─ background thread, every 5 s:
+ │         sensorDetection.py: read GPIO sensors + DHT11, update LEDs
+ │           └─ response.py: score threat ─► record video ─► S3 (presigned link)
+ │                 └─ sendMessage.py: SNS SMS (+ weatherInformation.py summary)
+ └─ Clock + weather panel (weatherInformation.py, Open-Meteo)
+```
 
-Rain Sensor
+## Hardware
 
-Weather data integration via the Open-Meteo API
+| Part | Notes |
+|---|---|
+| Raspberry Pi 400 | Raspberry Pi OS (Bookworm or Bullseye) with desktop |
+| MQ-2 gas sensor module | digital output (DO) used |
+| Flame sensor module | digital output (DO) used |
+| DHT11 temperature/humidity sensor | 3-pin module, or bare sensor plus a 10 kΩ pull-up |
+| Rain/water sensor module | digital output (DO) used |
+| HC-SR501 PIR motion sensor | |
+| KY-008 laser module | armed indicator |
+| LEDs + 220–330 Ω resistors | optional, one per sensor |
+| USB webcam | used for the face photo and alarm video |
+| USB microphone (or a webcam with a mic) | used for the voice pass-phrase |
+| Breadboard, jumper wires | |
 
-Intrusion Detection
+### Wiring (default pins)
 
-HC-SR501 Infrared Motion Sensor
+Pins use **BCM numbering** (the `GPIOxx` names, not the physical header position). Every pin can be changed in `config.py` or with an environment variable.
 
-System Status Indicators
+| Sensor | Module pin | Pi pin (BCM) | Physical pin | Setting |
+|---|---|---|---|---|
+| DHT11 | DATA | GPIO4 | 7 | `DHT_PIN` |
+| MQ-2 | DO | GPIO17 | 11 | `GAS_PIN` |
+| Flame sensor | DO | GPIO27 | 13 | `FLAME_PIN` |
+| HC-SR501 PIR | OUT | GPIO22 | 15 | `MOTION_PIN` |
+| Rain sensor | DO | GPIO23 | 16 | `RAIN_PIN` |
+| KY-008 laser | S | GPIO24 | 18 | `LASER_PIN` |
+| LEDs (optional) | anode via resistor | any free GPIO | | `GAS_LED_PIN`, `FLAME_LED_PIN`, `MOTION_LED_PIN`, `RAIN_LED_PIN` |
 
-KY-008 Laser Sensor indicating armed/disarmed status
+Connect every module's GND to a Pi GND pin (e.g. physical pin 6).
 
-LED indicators displaying individual sensor states
+> ⚠️ **The Pi's GPIO pins take 3.3 V only.** The MQ-2's heater needs 5 V, and many flame and rain boards are powered at 5 V too. If a module is powered from 5 V, its DO pin can output 5 V and damage the Pi. Either power the module from 3.3 V (if it works at that voltage), or put a voltage divider (e.g. 10 kΩ / 20 kΩ) or a level shifter between DO and the GPIO pin. The HC-SR501 runs on 5 V but its output is 3.3 V, so it is safe.
 
-Identity Verification
+**Active-low outputs:** most MQ-2, flame and rain boards pull DO **low** when they detect something, while the PIR drives its output **high**. Those are the defaults (`GAS_ACTIVE_LOW`, `FLAME_ACTIVE_LOW`, `RAIN_ACTIVE_LOW` = true; `MOTION_ACTIVE_LOW` = false). If a sensor reads "detected" when nothing is there, flip its setting. Use the potentiometer on the MQ-2, flame and rain boards to set their trigger threshold.
 
-Facial recognition using AWS Rekognition
+## Software setup
 
-Voice authentication using AWS Transcribe
+### 1. System packages
 
-Threat Assessment and Alerts
+```bash
+sudo apt update
+```
 
-Sensor data collected every 5 seconds
+```bash
+sudo apt install -y python3-venv python3-tk libgpiod2 alsa-utils
+```
 
-Built-in linear regression model estimates threat severity and expected cost
+- `python3-tk` provides Tkinter for the GUI.
+- `libgpiod2` is used by the DHT11 driver.
+- `alsa-utils` provides `arecord`, which records the voice pass-phrase. It is normally preinstalled.
 
-Automated threat summaries sent to the user via AWS SNS
+### 2. Python environment
 
-Hardware Requirements
+Recent Raspberry Pi OS versions block system-wide `pip install`, so use a virtual environment:
 
-Raspberry Pi 400
+```bash
+cd SecurityMeasureApp
+```
 
-MQ-2 Gas Sensor
+```bash
+python3 -m venv --system-site-packages .venv
+```
 
-Flame Sensor
+```bash
+source .venv/bin/activate
+```
 
-DHT11 Temperature and Humidity Sensor
+```bash
+pip install -r requirements.txt
+```
 
-Rain Sensor
+If `opencv-python` fails to install on your Pi, run `sudo apt install python3-opencv` instead. The `--system-site-packages` venv will pick it up.
 
-HC-SR501 PIR Motion Sensor
+### 3. Check the camera and microphone
 
-KY-008 Laser Sensor
+```bash
+arecord -l
+```
 
-LEDs and resistors
+```bash
+arecord -d 3 -f S16_LE -r 16000 -c 1 test.wav && aplay test.wav
+```
 
-Breadboard and jumper wires
+If the microphone is not the default device, set `AUDIO_DEVICE`, e.g. `export AUDIO_DEVICE=plughw:1,0`. If the webcam is not camera 0, set `CAMERA_INDEX`.
 
-USB or Pi-compatible webcam
+## AWS setup
 
-Software Dependencies
+1. **Credentials:** create an IAM user for the Pi and run `aws configure` on the Pi (or set `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY`). Never put keys in the code.
+2. **Region:** the app uses `AWS_REGION` (default `us-east-2`) for every service.
+3. **S3 bucket:** create a bucket in that region and keep "Block all public access" **on**. Videos are shared through temporary presigned links, not public files. Set `S3_BUCKET` to its name.
+4. **SNS SMS:** new accounts are in the SMS sandbox, so add and verify your phone number under *SNS → Text messaging (SMS) → Sandbox destination phone numbers*. Set `ALERT_PHONE_NUMBER` in E.164 format (e.g. `+15555550123`).
+5. **Owner photo:** save a clear, front-facing photo of the owner as `referenceImage.jpg` in the project folder (or set `REFERENCE_IMAGE`). It is git-ignored so your face isn't committed.
+6. **IAM permissions** the Pi's user needs (scope the S3 actions to your bucket):
+   - `s3:PutObject`, `s3:GetObject`, `s3:DeleteObject`
+   - `rekognition:CompareFaces`
+   - `transcribe:StartTranscriptionJob`, `transcribe:GetTranscriptionJob`, `transcribe:DeleteTranscriptionJob`
+   - `sns:Publish`
 
-Install the required Python libraries using pip:
+## Configuration
 
-pip install openmeteo-requests
-pip install RPi.GPIO
-pip install numpy
-pip install pandas
-pip install requests-cache
-pip install retry-requests
-pip install Adafruit_DHT
-pip install opencv-python
-pip install boto3
+All settings live in `config.py`, and each one can be overridden with an environment variable of the same name. The ones you must set:
 
-AWS Requirements
+```bash
+export S3_BUCKET="your-bucket-name"
+```
 
-Valid AWS account
+```bash
+export ALERT_PHONE_NUMBER="+15555550123"
+```
 
-Configured AWS credentials on the Raspberry Pi
+```bash
+export VOICE_PASSWORD="your secret phrase"
+```
 
-Read/write access to an S3 bucket for storing images and data
+Other useful settings:
 
-Verified SNS phone number for message delivery
+- `LATITUDE`, `LONGITUDE`, `TIMEZONE`: weather location
+- `ALERT_COOLDOWN_SECONDS`: minimum time between alert SMS messages
+- `POLL_INTERVAL_SECONDS`: how often the sensors are read
+- `TEMP_HIGH_C`, `TEMP_LOW_C`, `HUMIDITY_HIGH`: indoor limits (the DHT11 reports Celsius)
+- `FACE_SIMILARITY_THRESHOLD`, `VOICE_RECORD_SECONDS`: verification tuning
 
-Enabled services:
+The optional `voice.jpg` and `camera.jpg` icons are used for the two verification buttons. Without them, plain text buttons are shown.
 
-AWS Rekognition
+## Running
 
-AWS Transcribe
+```bash
+source .venv/bin/activate
+```
 
-AWS SNS
+```bash
+python3 main.py
+```
 
-Amazon S3
+1. Click **Voice** and say your pass-phrase within the recording window. Transcription takes ~10–30 s.
+2. Click **Camera** and look at the webcam.
+3. When both pass, **Arm System** appears. Arming turns the laser on and starts polling the sensors every 5 seconds. Readings are printed to the terminal.
+4. Each verification works for **one** arm or disarm. To disarm, pass the voice and face checks again, then click **Disarm System**. This stops polling, turns the laser off and releases the GPIO pins. The window can't be closed while the system is armed.
 
-Application Workflow
+The DHT11 often misses single readings ("Checksum did not validate"). The app retries automatically, and a missed reading never triggers an alarm on its own.
 
-User identity is verified using AWS Rekognition and AWS Transcribe.
+## Project structure
 
-Once armed, the system polls all sensors every 5 seconds.
-
-Sensor readings are passed to the threat assessment algorithm.
-
-The linear regression model evaluates threat severity and estimated cost.
-
-A summary alert is sent to the user via AWS SNS.
-
-Weather data from the Open-Meteo API is included in the dashboard and alert messages.
-
-Setup Notes
-
-Ensure all GPIO pin connections match the pin configuration defined in the code.
-
-Confirm reliable circuit connections between the Raspberry Pi, sensors, and LEDs.
-
-A functional webcam must be connected to the Raspberry Pi prior to running the application.
-
-Network connectivity is required for AWS and weather API access.
-
-Disclaimer
-
-This project is intended for educational and demonstration purposes. It is not designed for use as a certified safety or security system.
+| File | Purpose |
+|---|---|
+| `main.py` | Tkinter GUI: verification flow, arm/disarm, clock, weather panel |
+| `sensorDetection.py` | GPIO/DHT11 sensor reads, laser and LED control |
+| `response.py` | Threat scoring, cost model, alarm video, alert message |
+| `verification.py` | Webcam/microphone capture, S3 upload, Rekognition and Transcribe |
+| `sendMessage.py` | SMS through AWS SNS |
+| `weatherInformation.py` | Open-Meteo weather summary |
+| `config.py` | All pins, thresholds and AWS/weather settings |
