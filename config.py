@@ -64,6 +64,9 @@ AUDIO_DEVICE = _env("AUDIO_DEVICE", "")
 # Give up on an AWS Transcribe job after this many seconds.
 TRANSCRIBE_TIMEOUT_SECONDS = _env_int("TRANSCRIBE_TIMEOUT_SECONDS", 180)
 
+# A passed voice/face check is only valid for this long, and only for one arm or disarm.
+VERIFICATION_VALID_SECONDS = _env_int("VERIFICATION_VALID_SECONDS", 120)
+
 # Index of the webcam for OpenCV (0 = first camera).
 CAMERA_INDEX = _env_int("CAMERA_INDEX", 0)
 

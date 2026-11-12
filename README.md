@@ -172,7 +172,7 @@ python3 main.py
 1. Click **Voice** and say your pass-phrase within the recording window. Transcription takes ~10–30 s.
 2. Click **Camera** and look at the webcam.
 3. When both pass, **Arm System** appears. Arming turns the laser on and starts polling the sensors every 5 seconds. Readings are printed to the terminal.
-4. Each verification works for **one** arm or disarm. To disarm, pass the voice and face checks again, then click **Disarm System**. This stops polling, turns the laser off and releases the GPIO pins. The window can't be closed while the system is armed.
+4. Each verification works for **one** arm or disarm, and expires after 2 minutes (`VERIFICATION_VALID_SECONDS`). To disarm, pass the voice and face checks again, then click **Disarm System**. This stops polling, turns the laser off and releases the GPIO pins. The window can't be closed while the system is armed.
 
 The DHT11 often misses single readings ("Checksum did not validate"). The app retries automatically, and a missed reading never triggers an alarm on its own.
 

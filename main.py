@@ -19,8 +19,11 @@ class SecurityApp:
         self.sensors = None
         self.sensorThread = None
         self.stopEvent = threading.Event()
-        self.voiceVerified = False
-        self.cameraVerified = False
+        # Time (monotonic) each check last passed; a pass expires after VERIFICATION_VALID_SECONDS
+        self.voiceVerifiedAt = None
+        self.cameraVerifiedAt = None
+        # Bumped on every reset so results from checks started before the reset are ignored
+        self.verifyGeneration = 0
         self.busy = False
         # Results from background threads; Tkinter widgets may only be touched from the main thread
         self.results = queue.Queue()
@@ -95,6 +98,18 @@ class SecurityApp:
         return self.verifier
 
     # ------------------------------------------------------------ verification
+    @staticmethod
+    def _fresh(timestamp):
+        return timestamp is not None and time.monotonic() - timestamp <= config.VERIFICATION_VALID_SECONDS
+
+    @property
+    def voiceVerified(self):
+        return self._fresh(self.voiceVerifiedAt)
+
+    @property
+    def cameraVerified(self):
+        return self._fresh(self.cameraVerifiedAt)
+
     #Record the spoken password and check it with AWS Transcribe
     def onVoiceButton(self):
         if self.busy:
@@ -104,15 +119,20 @@ class SecurityApp:
             return
         self.busy = True
         self.voiceLabel.config(text=f"Recording for {config.VOICE_RECORD_SECONDS}s... say your password", fg="black")
-        self.runInBackground(lambda: self.getVerifier().verifyVoice(config.S3_BUCKET), self.onVoiceDone)
+        generation = self.verifyGeneration
+        self.runInBackground(lambda: self.getVerifier().verifyVoice(config.S3_BUCKET),
+                             lambda passed, error: self.onVoiceDone(passed, error, generation))
 
-    def onVoiceDone(self, passed, error):
+    def onVoiceDone(self, passed, error, generation):
         self.busy = False
+        if generation != self.verifyGeneration:
+            print("Ignoring voice result from before the last arm/disarm")
+            return
         if error:
             print(f"Voice verification error: {error}")
             self.voiceLabel.config(text=f"Voice Password: error ({error})", fg="red", wraplength=380)
         elif passed:
-            self.voiceVerified = True
+            self.voiceVerifiedAt = time.monotonic()
             self.voiceLabel.config(text="Voice Password: Completed", fg="green")
             self.voiceButton.config(bg="green")
             self.checkVerificationStatus()
@@ -125,15 +145,20 @@ class SecurityApp:
             return
         self.busy = True
         self.cameraLabel.config(text="Taking picture...", fg="black")
-        self.runInBackground(lambda: self.getVerifier().verifyFace(), self.onCameraDone)
+        generation = self.verifyGeneration
+        self.runInBackground(lambda: self.getVerifier().verifyFace(),
+                             lambda passed, error: self.onCameraDone(passed, error, generation))
 
-    def onCameraDone(self, passed, error):
+    def onCameraDone(self, passed, error, generation):
         self.busy = False
+        if generation != self.verifyGeneration:
+            print("Ignoring face result from before the last arm/disarm")
+            return
         if error:
             print(f"Face verification error: {error}")
             self.cameraLabel.config(text=f"Picture Verification: error ({error})", fg="red", wraplength=380)
         elif passed:
-            self.cameraVerified = True
+            self.cameraVerifiedAt = time.monotonic()
             self.cameraLabel.config(text="Picture Verification: Completed", fg="green")
             self.cameraButton.config(bg="green")
             self.checkVerificationStatus()
@@ -147,8 +172,9 @@ class SecurityApp:
 
     #Each arm or disarm uses up the verification, so the next one needs both checks again
     def resetVerification(self):
-        self.voiceVerified = False
-        self.cameraVerified = False
+        self.verifyGeneration += 1
+        self.voiceVerifiedAt = None
+        self.cameraVerifiedAt = None
         self.armButton.pack_forget()
         defaultBg = self.root.cget("bg")
         self.voiceButton.config(bg=defaultBg)
@@ -156,13 +182,22 @@ class SecurityApp:
         self.voiceLabel.config(text="Click to record voice password", fg="black")
         self.cameraLabel.config(text="Click to take picture", fg="black")
 
+    #Drop a verification that has gone stale and tell the user
+    def expireVerification(self):
+        self.resetVerification()
+        self.voiceLabel.config(text="Verification expired - record voice password again", fg="red")
+        self.cameraLabel.config(text="Verification expired - take picture again", fg="red")
+
     def isArmed(self):
         return self.sensorThread is not None and self.sensorThread.is_alive() and not self.stopEvent.is_set()
 
     # ------------------------------------------------------------------ arming
     def toggleArmed(self):
-        # Never arm or disarm without a fresh voice + face verification
+        # Never arm or disarm while a check is running or without a fresh voice + face verification
+        if self.busy:
+            return
         if not (self.voiceVerified and self.cameraVerified):
+            self.expireVerification()
             return
         if self.isArmed():
             self.disarm()
@@ -212,6 +247,11 @@ class SecurityApp:
     # ---------------------------------------------------------------- widgets
     def updateClock(self):
         self.clockLabel.config(text=time.strftime("%H:%M:%S"))
+        # Hide the arm/disarm button again if a passed check has expired
+        voiceExpired = self.voiceVerifiedAt is not None and not self.voiceVerified
+        cameraExpired = self.cameraVerifiedAt is not None and not self.cameraVerified
+        if (voiceExpired or cameraExpired) and not self.busy:
+            self.expireVerification()
         self.root.after(1000, self.updateClock)
 
     #Change weather information for GUI, refreshed every 30 minutes
