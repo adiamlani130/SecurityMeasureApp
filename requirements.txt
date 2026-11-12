@@ -1,0 +1,11 @@
+RPi.GPIO
+adafruit-circuitpython-dht
+opencv-python
+boto3
+numpy
+pandas
+scikit-learn
+requests
+requests-cache
+retry-requests
+Pillow
