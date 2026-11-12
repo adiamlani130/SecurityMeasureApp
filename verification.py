@@ -169,8 +169,10 @@ class Verification:
             if jobStatus == 'COMPLETED':
                 transcript_url = status['TranscriptionJob']['Transcript']['TranscriptFileUri']
                 transcript = self.getTranscript(transcript_url)
-                print(f"Heard: {transcript!r}")
-                return self.checkPassword(transcript)
+                # Don't print the transcript: it would put the pass-phrase in the logs
+                matched = self.checkPassword(transcript)
+                print("Pass-phrase matched." if matched else "Pass-phrase did not match.")
+                return matched
             print("Transcription failed:", status['TranscriptionJob'].get('FailureReason'))
             return False
         finally:

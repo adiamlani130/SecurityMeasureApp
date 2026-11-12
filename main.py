@@ -140,15 +140,34 @@ class SecurityApp:
         else:
             self.cameraLabel.config(text="Picture Verification: Did not pass", fg="red")
 
-    #Show the 'arm' button once both verification steps are complete
+    #Show the 'arm'/'disarm' button once both verification steps are complete
     def checkVerificationStatus(self):
         if self.voiceVerified and self.cameraVerified:
             self.armButton.pack(pady=10, before=self.statusLabel)
 
+    #Each arm or disarm uses up the verification, so the next one needs both checks again
+    def resetVerification(self):
+        self.voiceVerified = False
+        self.cameraVerified = False
+        self.armButton.pack_forget()
+        defaultBg = self.root.cget("bg")
+        self.voiceButton.config(bg=defaultBg)
+        self.cameraButton.config(bg=defaultBg)
+        self.voiceLabel.config(text="Click to record voice password", fg="black")
+        self.cameraLabel.config(text="Click to take picture", fg="black")
+
+    def isArmed(self):
+        return self.sensorThread is not None and self.sensorThread.is_alive() and not self.stopEvent.is_set()
+
     # ------------------------------------------------------------------ arming
     def toggleArmed(self):
-        if self.sensorThread is not None and self.sensorThread.is_alive():
+        # Never arm or disarm without a fresh voice + face verification
+        if not (self.voiceVerified and self.cameraVerified):
+            return
+        if self.isArmed():
             self.disarm()
+        elif self.sensorThread is not None and self.sensorThread.is_alive():
+            return  # still shutting down from the last disarm
         else:
             self.arm()
 
@@ -164,7 +183,8 @@ class SecurityApp:
         self.sensorThread = threading.Thread(target=self.runSensorDetection, daemon=True)
         self.sensorThread.start()
         self.armButton.config(text="Disarm System", fg="red")
-        self.statusLabel.config(text="System: ARMED", fg="red")
+        self.statusLabel.config(text="System: ARMED (verify again to disarm)", fg="red")
+        self.resetVerification()
         print("System Armed: True")
 
     #Stop polling; the sensor thread turns off the laser and cleans up GPIO when it exits
@@ -172,6 +192,7 @@ class SecurityApp:
         self.stopEvent.set()
         self.armButton.config(text="Arm System", fg="green")
         self.statusLabel.config(text="System: Disarmed", fg="black")
+        self.resetVerification()
         print("System Armed: False")
 
     #Run sensor system until disarmed
@@ -205,8 +226,11 @@ class SecurityApp:
         self.root.after(30 * 60 * 1000, self.updateWeather)
 
     def onClose(self):
+        # Closing the window would stop monitoring, so it needs a verified disarm first
+        if self.isArmed():
+            messagebox.showwarning("System armed", "Verify and disarm the system before closing.")
+            return
         if self.sensorThread is not None and self.sensorThread.is_alive():
-            self.stopEvent.set()
             self.sensorThread.join(timeout=10)
         self.root.destroy()
 
